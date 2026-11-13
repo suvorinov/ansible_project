@@ -1,0 +1,23 @@
+---
+# Базовый URL MeshCentral (без завершающего слэша)
+mc_base_url: "https://rmm.zr.local"
+
+# ID группы устройств (device group / mesh). Обязателен.
+# Где взять: UI MeshCentral -> группа -> "Add Agent" -> в ссылке параметр meshid,
+# либо скрипт scripts/mesh-id.sh в проекте rmm-ra.
+mc_mesh_id: ""
+
+# Проверять TLS-сертификат сервера. Для внутреннего УЦ ZR-ADMIN Root CA
+# либо поставь корневой серт в доверенные, либо оставь false.
+mc_validate_certs: false
+
+# Принудительная переустановка, даже если агент уже стоит
+mc_force_install: false
+
+# Windows
+mc_windows_service_name: "Mesh Agent"
+mc_windows_temp_exe: 'C:\Windows\Temp\MeshAgent.exe'
+
+# Linux
+mc_linux_install_path: /usr/local/mesh
+mc_linux_installer: /tmp/meshinstall.sh

@@ -1,0 +1,16 @@
+# ~/ansible_project/playbooks/ping_single_host.yml
+---
+- name: Ping одного Windows-хоста
+  hosts: test_windows_host
+  gather_facts: no
+  tasks:
+    - name: Win_ping
+      ansible.windows.win_ping:
+
+    - name: Получить имя компьютера
+      ansible.windows.win_hostname:
+      register: hostname
+
+    - name: Показать имя компьютера
+      ansible.builtin.debug:
+        msg: "Хост {{ inventory_hostname }}: {{ hostname }}"

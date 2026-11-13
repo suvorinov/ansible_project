@@ -1,0 +1,67 @@
+# ~/ansible_project/playbooks/proxy.yml
+# Управление прокси на Windows через ansible.windows модули
+#
+# Включить прокси:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/proxy.yml --limit 192.168.0.90 -e "ansible_password=пароль proxy_server=192.168.1.100:8080"
+#
+# Выключить прокси:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/proxy.yml --limit 192.168.0.90 -e "ansible_password=пароль proxy_action=disable"
+#
+# Показать настройки:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/proxy.yml --limit 192.168.0.90 -e "ansible_password=пароль proxy_action=status"
+---
+- name: Управление прокси на Windows
+  hosts: windows_hosts
+  gather_facts: no
+  ignore_unreachable: yes
+
+  vars:
+    proxy_action: status
+    proxy_server: ""
+    proxy_bypass: "localhost;127.0.0.1;192.168.*;10.*;172.16.*"
+
+  tasks:
+    # === Показать текущие настройки ===
+    - name: Получить настройки прокси
+      ansible.windows.win_shell: |
+        $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        $enable = (Get-ItemProperty -Path $regPath -Name ProxyEnable -ErrorAction SilentlyContinue).ProxyEnable
+        $server = (Get-ItemProperty -Path $regPath -Name ProxyServer -ErrorAction SilentlyContinue).ProxyServer
+        $bypass = (Get-ItemProperty -Path $regPath -Name ProxyOverride -ErrorAction SilentlyContinue).ProxyOverride
+
+        $status = if ($enable -eq 1) { "ВКЛ" } else { "ВЫКЛ" }
+        $srv = if ($server) { $server } else { "не задан" }
+        $byp = if ($bypass) { $bypass } else { "не задан" }
+
+        Write-Output "Прокси: $status"
+        Write-Output "Сервер: $srv"
+        Write-Output "Исключения: $byp"
+      register: result
+      changed_when: false
+      when: proxy_action == "status"
+
+    - name: Показать статус прокси
+      ansible.builtin.debug:
+        msg: "{{ result.stdout_lines }}"
+      when: proxy_action == "status"
+
+    # === Включить прокси через win_inet_proxy ===
+    - name: Включить прокси WinINet (браузер/IE/Edge)
+      ansible.windows.win_inet_proxy:
+        proxy: "{{ proxy_server }}"
+        bypass: "{{ proxy_bypass }}"
+        auto_detect: false
+      when: proxy_action == "enable" and proxy_server != ""
+
+    # === Выключить прокси через win_inet_proxy ===
+    - name: Выключить прокси WinINet
+      ansible.windows.win_inet_proxy:
+        proxy: ""
+        bypass: ""
+        auto_detect: false
+      when: proxy_action == "disable"
+
+    - name: Результат
+      ansible.builtin.debug:
+        msg: "Действие '{{ proxy_action }}' выполнено на {{ inventory_hostname }}"
+      when: proxy_action != "status"

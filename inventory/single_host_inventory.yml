@@ -1,0 +1,13 @@
+# ~/ansible_project/inventory/single_host_inventory.yml
+---
+all:
+  hosts:
+    test_windows_host:
+      ansible_host: 192.168.0.90
+      ansible_port: 5985
+      ansible_connection: winrm
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_transport: ntlm
+      ansible_user: Oleg.Suvorinov
+      ansible_python_interpreter: powershell
+      # ansible_password: "!vault..." # Лучше использовать ansible-vault

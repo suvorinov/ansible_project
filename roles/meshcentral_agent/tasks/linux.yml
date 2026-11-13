@@ -1,0 +1,59 @@
+---
+- name: Linux | проверить наличие агента
+  ansible.builtin.stat:
+    path: "{{ mc_linux_install_path }}/meshagent"
+  register: mc_linux_agent
+
+- name: Linux | установить агент
+  when: mc_force_install | bool or not mc_linux_agent.stat.exists
+  block:
+    - name: Linux | проверить длину mesh ID
+      ansible.builtin.assert:
+        that:
+          - mc_mesh_id | length >= 64
+        fail_msg: >-
+          Официальный meshinstall.sh требует mesh ID длиной не менее 64
+          символов. Похоже, передан не ID группы, а что-то другое.
+
+    - name: Linux | скачать установочный скрипт
+      ansible.builtin.get_url:
+        url: "{{ mc_server_url }}/meshagents?script=1"
+        dest: "{{ mc_linux_installer }}"
+        mode: "0755"
+        force: true
+        validate_certs: "{{ mc_validate_certs | bool }}"
+
+    - name: Linux | запустить установку
+      ansible.builtin.command:
+        argv:
+          - "{{ mc_linux_installer }}"
+          - "{{ mc_server_url }}"
+          - "{{ mc_mesh_id }}"
+        chdir: "{{ mc_linux_installer | dirname }}"
+      become: true
+      register: mc_linux_install
+      when: not ansible_check_mode
+  always:
+    - name: Linux | удалить временные файлы установщика
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mc_linux_installer }}"
+        - "{{ mc_linux_installer | dirname }}/meshagent"
+        - "{{ mc_linux_installer | dirname }}/meshagent.msh"
+        - "{{ mc_linux_installer | dirname }}/meshagent2.msh"
+
+- name: Linux | проверить результат
+  ansible.builtin.stat:
+    path: "{{ mc_linux_install_path }}/meshagent"
+  register: mc_linux_agent_after
+
+- name: Linux | убедиться, что агент установлен
+  ansible.builtin.assert:
+    that:
+      - mc_linux_agent_after.stat.exists
+    fail_msg: >-
+      Агент не найден в {{ mc_linux_install_path }}. Проверь, что на хосте
+      есть wget или curl и что sudo/become работает без пароля.
+  when: not ansible_check_mode

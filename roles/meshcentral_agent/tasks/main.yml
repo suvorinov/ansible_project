@@ -1,0 +1,29 @@
+---
+- name: Проверить, что задан ID группы устройств
+  ansible.builtin.assert:
+    that:
+      - mc_mesh_id | length > 0
+    fail_msg: >-
+      Не задан mc_mesh_id. Создай группу устройств в MeshCentral, затем возьми
+      её ID из ссылки агента или запусти scripts/mesh-id.sh в проекте rmm-ra
+      и передай: -e mc_mesh_id=<ID>
+  tags: always
+
+- name: Нормализовать URL сервера
+  ansible.builtin.set_fact:
+    mc_server_url: "{{ mc_base_url | regex_replace('/+$', '') }}"
+
+- name: Установка на Windows
+  ansible.builtin.include_tasks: windows.yml
+  when: ansible_os_family == 'Windows'
+
+- name: Установка на Linux
+  ansible.builtin.include_tasks: linux.yml
+  when: ansible_system == 'Linux'
+
+- name: Неподдерживаемая ОС
+  ansible.builtin.debug:
+    msg: >-
+      Пропуск {{ inventory_hostname }}: {{ ansible_system }}
+      пока не поддерживается ролью.
+  when: ansible_os_family != 'Windows' and ansible_system != 'Linux'

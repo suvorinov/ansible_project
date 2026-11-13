@@ -1,0 +1,57 @@
+# ~/ansible_project/playbooks/host_detail.yml
+# Подробная информация об одном Windows-хосте
+#
+# Запуск:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/host_detail.yml --limit "192.168.0.90" -e "ansible_password=$ANSIBLE_WINRM_PASSWORD"
+---
+- name: Подробная информация о хосте
+  hosts: windows_hosts
+  gather_facts: no
+  ignore_unreachable: yes
+  tasks:
+    - name: Получить всю информацию
+      ansible.windows.win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        $cs = Get-CimInstance Win32_ComputerSystem
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"
+        $ram = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+
+        $diskInfo = @()
+        foreach ($d in $disks) {
+            $total = [math]::Round($d.Size / 1GB, 2)
+            $free = [math]::Round($d.FreeSpace / 1GB, 2)
+            $used = $total - $free
+            $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
+            $diskInfo += "$($d.DeviceID) $used/$total GB ($pct%)"
+        }
+
+        $boot = $os.LastBootUpTime
+        $uptime = (Get-Date) - $boot
+
+        Write-Output "=== {{ inventory_hostname }} ==="
+        Write-Output "OS:        $($os.Caption) $($os.Version) (Build $($os.BuildNumber))"
+        Write-Output "Arch:      $($os.OSArchitecture)"
+        Write-Output "Hostname:  $($cs.Name)"
+        Write-Output "Domain:    $($cs.Domain)"
+        Write-Output "Model:     $($cs.Manufacturer) $($cs.Model)"
+        Write-Output "CPU:       $($cpu.Name)"
+        Write-Output "CPU Core:  $($cpu.NumberOfCores) cores, $($cpu.NumberOfLogicalProcessors) logical"
+        Write-Output "RAM:       $ram GB"
+        Write-Output "Disks:     $($diskInfo -join '; ')"
+        Write-Output "Uptime:    $($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"
+        Write-Output "LastBoot:  $($boot.ToString('yyyy-MM-dd HH:mm:ss'))"
+      register: result
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Вывести информацию
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      loop: "{{ result.stdout_lines }}"
+      when: result.stdout_lines is defined
+
+    - name: Ошибка подключения
+      ansible.builtin.debug:
+        msg: "Не удалось подключиться к {{ inventory_hostname }}: {{ result.msg | default('неизвестная ошибка') }}"
+      when: result is failed

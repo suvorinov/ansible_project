@@ -1,0 +1,22 @@
+# Установщики (50+ МБ) — качаются по `./deploy_rustdesk.sh --prefetch`
+files/installers/*.msi
+files/installers/*.exe
+
+# Отчёты прогонов: содержат ID устройств, не для git
+reports/
+
+# Бэкапы и кэш
+*.bak
+*.bak-*
+*.backup
+*.old
+__pycache__/
+*.pyc
+
+# Локальные секреты (пароли WinRM/RustDesk сюда не кладём)
+.env
+*.password
+*pass*.txt
+
+# Временный inventory
+inventory/temp/

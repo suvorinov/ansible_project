@@ -1,0 +1,51 @@
+# ~/ansible_project/playbooks/run_app.yml
+# Запуск приложений на Windows-хостах
+#
+# Запуск:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/run_app.yml --limit "192.168.0.90" -e "ansible_password=пароль app=https://ya.ru"
+---
+- name: Запуск приложений на Windows
+  hosts: windows_hosts
+  gather_facts: no
+  ignore_unreachable: yes
+
+  vars:
+    app: "https://google.com"
+
+  tasks:
+    - name: Запуск URL в браузере
+      ansible.windows.win_shell: |
+        Start-Process "msedge.exe" -ArgumentList "{{ app }}"
+      when: app.startswith("http")
+      ignore_errors: yes
+
+    - name: Запуск приложения по пути
+      ansible.windows.win_shell: |
+        cmd /c start "" "{{ app }}"
+      when: not app.startswith("http")
+      ignore_errors: yes
+
+    - name: Найти браузеры
+      ansible.windows.win_shell: |
+        $paths = @(
+          'C:\Program Files\Google\Chrome\Application\chrome.exe',
+          'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+          'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+          'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+          'C:\Program Files\Mozilla Firefox\firefox.exe'
+        )
+        $found = @()
+        foreach ($p in $paths) {
+          if (Test-Path $p) { $found += $p }
+        }
+        $found | ForEach-Object { Write-Output $_ }
+      register: browsers
+      changed_when: false
+
+    - name: Показать найденные браузеры
+      ansible.builtin.debug:
+        msg: "Найдены: {{ browsers.stdout_lines }}"
+
+    - name: Результат
+      ansible.builtin.debug:
+        msg: "Приложение запущено на {{ inventory_hostname }}"

@@ -1,0 +1,14 @@
+# ~/ansible_project/playbooks/gather_facts.yml
+---
+- name: Сбор информации о Windows-хостах
+  hosts: windows_hosts
+  gather_facts: yes
+  tasks:
+    - name: Показать основную информацию
+      ansible.builtin.debug:
+        msg: |
+          Хост: {{ inventory_hostname }}
+          Имя: {{ ansible_hostname }}
+          Домен: {{ ansible_domain | default('N/A') }}
+          OS: {{ ansible_os_family }} {{ ansible_distribution_version }}
+          IP: {{ ansible_default_ipv4.address | default('N/A') }}

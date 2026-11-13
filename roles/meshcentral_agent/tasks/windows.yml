@@ -1,0 +1,69 @@
+---
+- name: Windows | определить тип агента
+  ansible.builtin.set_fact:
+    mc_agent_id: "{{ '43' if ansible_architecture == 'ARM64' else ('4' if ansible_architecture == '64-bit' else '3') }}"
+
+- name: Windows | проверить службу агента
+  ansible.windows.win_service_info:
+    name: "{{ mc_windows_service_name }}"
+  register: mc_win_service
+  failed_when: false
+
+- name: Windows | скачать и установить агент
+  when: mc_force_install | bool or not (mc_win_service.exists | default(false))
+  block:
+    - name: Windows | скачать установщик
+      ansible.windows.win_get_url:
+        url: "{{ mc_server_url }}/meshagents?id={{ mc_agent_id }}&meshid={{ mc_mesh_id | urlencode }}&installflags=0"
+        dest: "{{ mc_windows_temp_exe }}"
+        force: true
+        validate_certs: "{{ mc_validate_certs | bool }}"
+
+    - name: Windows | запустить установку
+      ansible.windows.win_command:
+        cmd: "{{ mc_windows_temp_exe }} -fullinstall"
+      register: mc_win_install
+  always:
+    - name: Windows | удалить установщик
+      ansible.windows.win_file:
+        path: "{{ mc_windows_temp_exe }}"
+        state: absent
+
+- name: Windows | дождаться появления службы
+  ansible.windows.win_service_info:
+    name: "{{ mc_windows_service_name }}"
+  register: mc_win_service_after
+  until: mc_win_service_after.exists | default(false)
+  retries: 12
+  delay: 5
+  failed_when: false
+
+# Важно: не используем ansible.windows.win_service для запуска.
+# У этого модуля desktop_interact по умолчанию false, и он перезаписывает
+# значение, выставленное установщиком MeshAgent (true). Запускаем через
+# PowerShell, чтобы не менять параметры существующей службы.
+- name: Windows | запустить службу при необходимости
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $name = '{{ mc_windows_service_name }}'
+    $svc = Get-Service -Name $name
+    if ($svc.Status -ne 'Running') {
+        Start-Service -Name $name
+        Write-Output 'started'
+    } else {
+        Write-Output 'already-running'
+    }
+  register: mc_win_start
+  changed_when: mc_win_start.stdout | trim == 'started'
+  when:
+    - mc_win_service_after.exists | default(false)
+    - (mc_win_service_after.services | map(attribute='state') | first | default('')) != 'started'
+
+- name: Windows | проверить результат
+  ansible.builtin.assert:
+    that:
+      - mc_win_service_after.exists | default(false)
+    fail_msg: >-
+      Служба "{{ mc_windows_service_name }}" не найдена. Проверь права
+      администратора на хосте и лог установки MeshAgent.
+  when: not ansible_check_mode

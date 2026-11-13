@@ -1,0 +1,64 @@
+---
+# Хост мог не ответить (в playbook стоит ignore_unreachable). Тогда фактов нет
+# и любой `ansible_os_family` ниже упадёт — аккуратно закрываем play для него.
+- name: RustDesk | пропустить недоступный хост
+  ansible.builtin.meta: end_host
+  when: ansible_os_family is not defined
+
+- name: RustDesk | проверить обязательные переменные
+  ansible.builtin.assert:
+    that:
+      - rd_server | length > 0
+      - rd_key | length > 0
+    fail_msg: >-
+      Не заданы rd_server и/или rd_key. Узнать их можно командой
+      «make rustdesk-info» в проекте rmm-ra.
+  tags: always
+
+- name: RustDesk | вычислить адрес relay
+  ansible.builtin.set_fact:
+    rd_relay_server: "{{ rd_server }}:{{ rd_relay_port }}"
+
+- name: RustDesk | установка на Windows
+  ansible.builtin.include_tasks: windows.yml
+  when: ansible_os_family == 'Windows'
+
+- name: RustDesk | установка на Linux
+  ansible.builtin.include_tasks: linux.yml
+  when: ansible_system == 'Linux'
+
+- name: RustDesk | неподдерживаемая ОС
+  ansible.builtin.debug:
+    msg: >-
+      Пропуск {{ inventory_hostname }}: {{ ansible_system }}
+      пока не поддерживается ролью.
+  when: ansible_os_family != 'Windows' and ansible_system != 'Linux'
+
+# --- Отчёт с ID на control-node: по файлу на хост, без гонок ---
+- name: RustDesk | отчёт | создать каталог
+  ansible.builtin.file:
+    path: "{{ rd_report_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: not ansible_check_mode
+
+- name: RustDesk | отчёт | сохранить ID устройства
+  ansible.builtin.copy:
+    dest: "{{ rd_report_dir }}/{{ inventory_hostname }}.txt"
+    mode: '0644'
+    content: |
+      host={{ inventory_hostname }}
+      rustdesk_id={{ rd_id }}
+      version={{ rd_version_installed | default('') }}
+      permanent_password={{ 'yes' if rd_has_permanent_password | default(false) | bool else 'no' }}
+      server={{ rd_server }}
+      relay={{ rd_relay_server }}
+  delegate_to: localhost
+  become: false
+  when:
+    - not ansible_check_mode
+    - rd_id is defined
+    - rd_id | length > 0

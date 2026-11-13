@@ -1,0 +1,23 @@
+# ~/working/ansible_project/playbooks/meshcentral_agent.yml
+#
+# Массовая установка агента MeshCentral на Windows (и Linux).
+#
+# Примеры:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/meshcentral_agent.yml \
+#     --limit 192.168.0.90 -e "mc_mesh_id=<ID>" --ask-pass
+#
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/meshcentral_agent.yml \
+#     -e "mc_mesh_id=<ID>" --ask-pass
+#
+# Mesh ID берётся из группы устройств MeshCentral:
+#   - в UI: группа -> "Add Agent" -> параметр meshid в ссылке;
+#   - или: ~/opt/rmm-ra/scripts/mesh-id.sh
+---
+- name: Установка агента MeshCentral
+  hosts: all
+  gather_facts: true
+  ignore_unreachable: true
+
+  roles:
+    - role: meshcentral_agent
+      tags: [meshcentral, agent]

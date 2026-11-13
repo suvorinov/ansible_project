@@ -1,0 +1,112 @@
+---
+- name: RustDesk | Linux | определить тип пакета
+  ansible.builtin.set_fact:
+    rd_linux_kind: "{{ 'rpm' if ansible_os_family == 'RedHat' else ('deb' if ansible_os_family == 'Debian' else '') }}"
+
+- name: RustDesk | Linux | проверить, поддерживается ли дистрибутив
+  ansible.builtin.assert:
+    that:
+      - rd_linux_kind | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }}: поддерживаются только Debian/Ubuntu и
+      RedHat/Fedora. Установи клиент вручную.
+
+- name: RustDesk | Linux | проверить наличие клиента
+  ansible.builtin.command: which rustdesk
+  register: rd_linux_which
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: RustDesk | Linux | установить клиент
+  when:
+    - not ansible_check_mode
+    - rd_linux_which.rc != 0 or rd_force_install | bool
+  block:
+    - name: RustDesk | Linux | сформировать ссылку на пакет
+      ansible.builtin.set_fact:
+        rd_linux_url: >-
+          https://github.com/rustdesk/rustdesk/releases/download/{{ rd_version }}/rustdesk-{{ rd_version }}{{
+            '-0.' ~ rd_linux_arch ~ '.rpm' if rd_linux_kind == 'rpm' else '-' ~ rd_linux_arch ~ '.deb' }}
+
+    - name: RustDesk | Linux | скачать пакет
+      ansible.builtin.get_url:
+        url: "{{ rd_linux_url }}"
+        dest: "{{ rd_linux_package }}"
+        mode: '0644'
+        validate_certs: "{{ rd_validate_certs | bool }}"
+
+    - name: RustDesk | Linux | установить пакет (deb)
+      ansible.builtin.apt:
+        deb: "{{ rd_linux_package }}"
+      when: rd_linux_kind == 'deb'
+
+    - name: RustDesk | Linux | установить пакет (rpm)
+      ansible.builtin.dnf:
+        name: "{{ rd_linux_package }}"
+        state: present
+        disable_gpg_check: true
+      when: rd_linux_kind == 'rpm'
+
+  always:
+    - name: RustDesk | Linux | удалить пакет
+      ansible.builtin.file:
+        path: "{{ rd_linux_package }}"
+        state: absent
+
+- name: RustDesk | Linux | создать каталог конфигурации
+  ansible.builtin.file:
+    path: "{{ rd_linux_config_dir }}"
+    state: directory
+    mode: '0700'
+  when: not ansible_check_mode
+
+- name: RustDesk | Linux | прописать параметры сервера
+  ansible.builtin.copy:
+    dest: "{{ rd_linux_config_dir }}/RustDesk2.toml"
+    mode: '0600'
+    content: |
+      [options]
+      custom-rendezvous-server = "{{ rd_server }}"
+      relay-server = "{{ rd_relay_server }}"
+      key = "{{ rd_key }}"
+  when: not ansible_check_mode
+  notify: RustDesk | перезапустить службу Linux
+
+- name: RustDesk | Linux | включить и запустить службу
+  ansible.builtin.systemd:
+    name: rustdesk
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: RustDesk | Linux | получить ID устройства
+  ansible.builtin.command: rustdesk --get-id
+  register: rd_linux_get_id
+  changed_when: false
+  failed_when: false
+  retries: 12
+  delay: 5
+  until: rd_linux_get_id.rc == 0 and (rd_linux_get_id.stdout | trim | length) > 0
+  when: not ansible_check_mode
+
+- name: RustDesk | Linux | выделить ID и версию
+  ansible.builtin.set_fact:
+    rd_id: >-
+      {{ rd_linux_get_id.stdout | default('')
+         | regex_search('([0-9]{6,12})', '\1') | default([], true)
+         | first | default('') }}
+    rd_version_installed: "{{ rd_version }}"
+
+- name: RustDesk | Linux | проверить, что ID получен
+  ansible.builtin.assert:
+    that:
+      - rd_id | length > 0
+    fail_msg: >-
+      Не удалось получить RustDesk ID на {{ inventory_hostname }}.
+      Проверь: systemctl status rustdesk
+  when: not ansible_check_mode
+
+- name: RustDesk | Linux | результат
+  ansible.builtin.debug:
+    msg: "RustDesk ID: {{ rd_id | default('n/a') }}"

@@ -1,0 +1,610 @@
+---
+# Замечания по реализации:
+#  - задачи чтения состояния помечены check_mode: false, иначе в --check
+#    register не содержит stdout и playbook падает;
+#  - установка выполняется только вне --check; в --check печатается план;
+#  - ставим MSI через msiexec /qn: у него есть код возврата и журнал, и он
+#    не виснет на невидимом окне, в отличие от exe-обёртки --silent-install;
+#  - установщик запускаем через Start-Process + WaitForExit(таймаут): если он
+#    всё-таки завис, задача убивает процесс и падает с понятной ошибкой, а не
+#    висит бесконечно;
+#  - для переустановки (--force) MSI получает REINSTALL=ALL: win_package с
+#    product_id на уже установленном пакете вообще не запускает инсталлятор.
+
+- name: RustDesk | Windows | определить, это ARM64
+  ansible.builtin.set_fact:
+    # ansible_architecture на Windows — это "64-bit"/"ARM 64-bit",
+    # а не x86_64/aarch64, поэтому смотрим architecture2 и подстроку ARM.
+    rd_win_is_arm: >-
+      {{ (ansible_architecture2 | default('')) == 'arm64'
+         or 'arm' in ((ansible_architecture | default('')) | lower) }}
+
+- name: RustDesk | Windows | выбрать архитектуру и формат пакета
+  ansible.builtin.set_fact:
+    rd_win_arch: "{{ 'aarch64' if (rd_win_is_arm | bool) else 'x86_64' }}"
+    rd_win_ext: >-
+      {{ 'msi' if (rd_installer_url | default('') | lower).endswith('.msi')
+         else ('exe' if (rd_installer_url | default('') | lower).endswith('.exe')
+               else rd_windows_package_format) }}
+
+- name: RustDesk | Windows | проверить формат пакета
+  ansible.builtin.assert:
+    that:
+      - rd_win_ext in ['msi', 'exe']
+    fail_msg: >-
+      Неизвестный формат установщика "{{ rd_win_ext }}". Допустимо: msi или exe
+      (rd_windows_package_format, либо расширение в rd_installer_url).
+
+- name: RustDesk | Windows | сформировать ссылку на установщик
+  ansible.builtin.set_fact:
+    rd_win_url: >-
+      {{ rd_installer_url if rd_installer_url | length > 0 else
+         'https://github.com/rustdesk/rustdesk/releases/download/' ~ rd_version ~
+         '/rustdesk-' ~ rd_version ~ '-' ~ rd_win_arch ~ '.' ~ rd_win_ext }}
+
+- name: RustDesk | Windows | путь к временному установщику
+  ansible.builtin.set_fact:
+    rd_win_temp: "{{ rd_windows_temp_dir }}\\rustdesk-setup.{{ rd_win_ext }}"
+
+- name: RustDesk | Windows | проверить установленную версию
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'SilentlyContinue'
+    $exe = '{{ rd_windows_exe }}'
+    $arp = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+             Where-Object { $_.DisplayName -like '*RustDesk*' })[0]
+    if ((Test-Path -LiteralPath $exe) -or $arp) {
+        $ver = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
+        if ($arp -and $arp.DisplayVersion) { $ver = $arp.DisplayVersion }
+        Write-Output 'installed=1'
+        Write-Output ('version=' + ($ver -replace '\s.*$', ''))
+        if ($arp -and $arp.WindowsInstaller -eq 1) { Write-Output 'msi=1' } else { Write-Output 'msi=0' }
+    } else {
+        Write-Output 'installed=0'
+        Write-Output 'msi=0'
+    }
+  register: rd_win_state
+  changed_when: false
+  check_mode: false
+
+- name: RustDesk | Windows | разобрать состояние
+  ansible.builtin.set_fact:
+    rd_win_installed: "{{ 'installed=1' in (rd_win_state.stdout | default('')) }}"
+    rd_win_msi_installed: "{{ 'msi=1' in (rd_win_state.stdout | default('')) }}"
+    rd_win_version: >-
+      {{ rd_win_state.stdout | default('')
+         | regex_search('version=([0-9][0-9.]*)', '\1')
+         | default([], true) | first | default('') }}
+
+- name: RustDesk | Windows | установить клиент
+  when:
+    - not ansible_check_mode
+    - not rd_win_installed or rd_force_install | bool
+  block:
+    # MSI RustDesk отказывается ставиться поверх версии, установленной exe-
+    # инсталлятором («The application is installed by self-installation
+    # method»). Лучше упасть с понятным текстом, чем ловить это в журнале MSI.
+    - name: RustDesk | Windows | проверить, можно ли переустановить
+      ansible.builtin.fail:
+        msg: >-
+          На {{ inventory_hostname }} RustDesk установлен exe-инсталлятором
+          (самоустановка), а MSI поверх него не ставится. Удали прежнюю версию
+          и повтори:
+          & "{{ rd_windows_exe }}" --uninstall
+          (или через «Программы и компоненты»), либо запусти без --force —
+          тогда роль просто настроит уже установленный клиент.
+      when:
+        - rd_force_install | bool
+        - rd_win_installed | bool
+        - not (rd_win_msi_installed | bool)
+
+    # Если предыдущий прогон был прерван, установщик мог остаться висеть в
+    # C:\Windows\Temp (он ждёт невидимый диалог UAC и держит файл). Такой
+    # процесс бесполезен и мешает новой установке — снимаем его.
+    - name: RustDesk | Windows | найти зависшие процессы установщика
+      ansible.windows.win_shell: |
+        Get-CimInstance Win32_Process |
+          Where-Object {
+            $_.ExecutablePath -and
+            $_.ExecutablePath -like '{{ rd_windows_temp_dir }}\rustdesk-*'
+          } |
+          Select-Object -ExpandProperty ProcessId
+      register: rd_win_stale
+      changed_when: false
+      failed_when: false
+
+    - name: RustDesk | Windows | остановить зависший установщик
+      ansible.windows.win_shell: "taskkill.exe /PID {{ item }} /T /F"
+      loop: >-
+        {{ (rd_win_stale.stdout_lines | default([]))
+           | map('trim') | select('match', '^[0-9]+$') | list }}
+      changed_when: true
+      when: rd_win_stale is defined
+
+    - name: RustDesk | Windows | убрать остатки прежних установщиков
+      ansible.windows.win_shell: |
+        Get-ChildItem -LiteralPath '{{ rd_windows_temp_dir }}' -Filter 'rustdesk-setup.*' -File -ErrorAction SilentlyContinue |
+          Remove-Item -Force -ErrorAction SilentlyContinue
+      changed_when: false
+      failed_when: false
+
+    - name: RustDesk | Windows | проверить локальный кэш установщика
+      ansible.builtin.stat:
+        path: "{{ rd_installer_cache_dir }}/rustdesk-{{ rd_version }}-{{ rd_win_arch }}.{{ rd_win_ext }}"
+      register: rd_win_cache
+      delegate_to: localhost
+      become: false
+      when: rd_installer_url | length == 0
+
+    - name: RustDesk | Windows | скачать установщик с GitHub
+      ansible.windows.win_get_url:
+        url: "{{ rd_win_url }}"
+        dest: "{{ rd_win_temp }}"
+        force: true
+        validate_certs: "{{ rd_validate_certs | bool }}"
+      when:
+        - rd_installer_url | length > 0 or not (rd_win_cache.stat.exists if rd_win_cache is defined else false)
+
+    - name: RustDesk | Windows | скопировать установщик из локального кэша
+      ansible.windows.win_copy:
+        src: "{{ rd_installer_cache_dir }}/rustdesk-{{ rd_version }}-{{ rd_win_arch }}.{{ rd_win_ext }}"
+        dest: "{{ rd_win_temp }}"
+      when:
+        - rd_installer_url | length == 0
+        - rd_win_cache.stat.exists | default(false)
+
+    # Таймаут обязателен: exe-обёртка RustDesk умеет ждать невидимый диалог
+    # UAC, и без WaitForExit(ms) прогон висит бесконечно.
+    - name: RustDesk | Windows | запустить установку (msi)
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $msi = '{{ rd_win_temp }}'
+        $log = '{{ rd_windows_install_log }}'
+        $timeoutMs = {{ rd_windows_install_timeout | int }} * 1000
+        $msiArgs = @('/i', $msi, '/qn', '/norestart', '/L*v', $log)
+        {% if rd_force_install | bool and rd_win_msi_installed | default(false) | bool %}
+        $msiArgs += @('REINSTALL=ALL', 'REINSTALLMODE=vomus')
+        {% endif %}
+        $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -PassThru
+        if (-not $p.WaitForExit($timeoutMs)) {
+            & taskkill.exe /PID $p.Id /T /F | Out-Null
+            Write-Output ('msiexec не завершился за {{ rd_windows_install_timeout | int }} с — процесс убит')
+            exit 990
+        }
+        Write-Output ('msiexec завершился с кодом ' + $p.ExitCode)
+        exit $p.ExitCode
+      register: rd_win_install
+      changed_when: rd_win_install.rc in [0, 3010, 1641]
+      failed_when: rd_win_install.rc not in [0, 3010, 1641]
+      when: rd_win_ext == 'msi'
+
+    - name: RustDesk | Windows | запустить установку (exe)
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $timeoutMs = {{ rd_windows_install_timeout | int }} * 1000
+        $p = Start-Process -FilePath '{{ rd_win_temp }}' -ArgumentList '--silent-install' -PassThru
+        if (-not $p.WaitForExit($timeoutMs)) {
+            & taskkill.exe /PID $p.Id /T /F | Out-Null
+            Write-Output ('Установщик не завершился за {{ rd_windows_install_timeout | int }} с — процесс убит')
+            exit 990
+        }
+        Write-Output ('Установщик завершился с кодом ' + $p.ExitCode)
+        exit $p.ExitCode
+      register: rd_win_install
+      changed_when: rd_win_install.rc in [0, 3010, 1641]
+      failed_when: rd_win_install.rc not in [0, 3010, 1641]
+      when: rd_win_ext == 'exe'
+
+    - name: RustDesk | Windows | дождаться появления rustdesk.exe
+      ansible.windows.win_stat:
+        path: "{{ rd_windows_exe }}"
+      register: rd_win_exe_wait
+      until: rd_win_exe_wait.stat.exists | default(false)
+      retries: 36
+      delay: 5
+
+  rescue:
+    - name: RustDesk | Windows | прочитать журнал установки
+      ansible.windows.win_shell: |
+        $log = '{{ rd_windows_install_log }}'
+        if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log -Tail 40
+        } else {
+            Write-Output 'журнал установки не найден'
+        }
+      register: rd_win_log_tail
+      changed_when: false
+      failed_when: false
+
+    - name: RustDesk | Windows | сообщить об ошибке установки
+      ansible.builtin.fail:
+        msg: |
+          Установка RustDesk не удалась (rc={{ rd_win_install.rc | default('?') }}, формат {{ rd_win_ext }}).
+
+          Последние строки вывода установщика:
+          {{ rd_win_install.stdout | default('') | trim }}
+
+          --- {{ rd_windows_install_log }} ---
+          {{ rd_win_log_tail.stdout | default('') | trim }}
+
+  always:
+    - name: RustDesk | Windows | удалить установщик
+      ansible.windows.win_file:
+        path: "{{ rd_win_temp }}"
+        state: absent
+      failed_when: false
+
+- name: RustDesk | Windows | CHECK | показать план установки
+  ansible.builtin.debug:
+    msg: >-
+      Будет установлен RustDesk {{ rd_version }} ({{ rd_win_arch }})
+      из {{ rd_win_url }}
+  when:
+    - ansible_check_mode
+    - not rd_win_installed or rd_force_install | bool
+
+- name: RustDesk | Windows | проверить наличие rustdesk.exe
+  ansible.windows.win_stat:
+    path: "{{ rd_windows_exe }}"
+  register: rd_win_exe
+
+- name: RustDesk | Windows | проверить службу
+  ansible.windows.win_service_info:
+    name: "{{ rd_service_name }}"
+  register: rd_win_service
+  failed_when: false
+
+- name: RustDesk | Windows | зарегистрировать службу
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--install-service"
+    chdir: "{{ rd_windows_dir }}"
+  when:
+    - not ansible_check_mode
+    - rd_win_exe.stat.exists | default(false)
+    - not (rd_win_service.exists | default(false))
+  changed_when: true
+
+- name: RustDesk | Windows | включить автозапуск и запустить службу
+  ansible.windows.win_service:
+    name: "{{ rd_service_name }}"
+    state: started
+    start_mode: auto
+  when:
+    - not ansible_check_mode
+    - rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | перечитать состояние службы
+  ansible.windows.win_service_info:
+    name: "{{ rd_service_name }}"
+  register: rd_win_service
+  failed_when: false
+  check_mode: false
+
+- name: RustDesk | Windows | прочитать и сравнить параметры подключения
+  ansible.windows.win_shell: "{{ rd_win_options_probe }}"
+  register: rd_win_options_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | разобрать параметры подключения
+  ansible.builtin.set_fact:
+    rd_win_options: >-
+      {{ ({'current': {}, 'diff': {}})
+         | combine(rd_win_options_raw.stdout | default('{}', true) | from_json) }}
+  when: rd_win_options_raw.stdout is defined
+
+- name: RustDesk | Windows | показать расхождения
+  ansible.builtin.debug:
+    msg: >-
+      Требуют изменения:
+      {{ (rd_win_options.diff | default({})) | dict2items
+         | map(attribute='key') | list | join(', ') }}
+  when:
+    - rd_win_options is defined
+    - (rd_win_options.diff | default({})) | length > 0
+
+- name: RustDesk | Windows | прописать параметры сервера
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--option"
+      - "{{ item.key }}"
+      - "{{ item.value }}"
+    chdir: "{{ rd_windows_dir }}"
+  loop: "{{ ((rd_win_options.diff if rd_win_options is defined else {}) | default({})) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - rd_win_options is defined
+  notify: RustDesk | перезапустить службу
+
+# Даём службе применить параметры и успокоиться: установка пароля идёт по IPC,
+# и сразу после установки служба может ещё инициализироваться.
+- name: RustDesk | Windows | применить настройки перед установкой пароля
+  ansible.builtin.meta: flush_handlers
+  when: not ansible_check_mode
+
+# Постоянный пароль хранится в конфиге службы в зашифрованном виде
+# (RustDesk.toml), поэтому сравнить его с желаемым нельзя. Ставим только если
+# пароля ещё нет. Значение может быть в одинарных или двойных кавычках —
+# проверяем оба варианта.
+- name: RustDesk | Windows | проверить наличие постоянного пароля
+  ansible.windows.win_shell: |
+    $p = '{{ rd_windows_password_file }}'
+    if (-not (Test-Path -LiteralPath $p)) { 'no'; exit 0 }
+    if (Select-String -LiteralPath $p -Pattern '^\s*password\s*=\s*["''][^"'']+["'']' -Quiet) {
+        'yes'
+    } else {
+        'no'
+    }
+  register: rd_win_has_password
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | зафиксировать наличие постоянного пароля
+  ansible.builtin.set_fact:
+    rd_has_permanent_password: "{{ (rd_win_has_password.stdout | default('no') | trim) == 'yes' }}"
+  when: rd_win_has_password.stdout is defined
+
+# `--password` общается со службой по IPC: ACK ждётся всего 1 секунду, а при
+# таймауте или отказе команда просто печатает ошибку и возвращает код 0.
+# Поэтому повторяем попытки, а результат проверяем по файлу, а не по rc.
+- name: RustDesk | Windows | задать постоянный пароль
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--password"
+      - "{{ rd_permanent_password }}"
+    chdir: "{{ rd_windows_dir }}"
+  register: rd_win_set_password
+  until: "'Done!' in (rd_win_set_password.stdout | default(''))"
+  retries: 5
+  delay: 2
+  changed_when: "'Done!' in (rd_win_set_password.stdout | default(''))"
+  failed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_win_exe.stat.exists | default(false)
+    - (rd_win_has_password.stdout | default('no') | trim) == 'no' or rd_force_password | bool
+
+- name: RustDesk | Windows | перечитать наличие постоянного пароля
+  ansible.windows.win_shell: |
+    $p = '{{ rd_windows_password_file }}'
+    if (-not (Test-Path -LiteralPath $p)) { 'no'; exit 0 }
+    if (Select-String -LiteralPath $p -Pattern '^\s*password\s*=\s*["''][^"'']+["'']' -Quiet) {
+        'yes'
+    } else {
+        'no'
+    }
+  register: rd_win_has_password_after
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | оценить результат установки пароля
+  ansible.builtin.set_fact:
+    rd_password_ok: "{{ (rd_win_has_password_after.stdout | default('no') | trim) == 'yes' }}"
+  when: rd_win_has_password_after.stdout is defined
+
+- name: RustDesk | Windows | отметить, что постоянный пароль задан
+  ansible.builtin.set_fact:
+    rd_has_permanent_password: true
+  when: rd_password_ok | default(false) | bool
+
+# Если пароль не записался, НЕЛЬЗЯ оставлять режим «только постоянный пароль»:
+# иначе на хосте не останется ни одного рабочего пароля. Возвращаем одноразовый
+# с экрана и падаем с внятным сообщением.
+- name: RustDesk | Windows | вернуть одноразовый пароль, если постоянный не задался
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--option"
+      - "verification-method"
+      - "use-both-passwords"
+    chdir: "{{ rd_windows_dir }}"
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_win_exe.stat.exists | default(false)
+    - not (rd_password_ok | default(false) | bool)
+  changed_when: true
+
+# Чтобы клиент не предлагал и не принимал одноразовый пароль с экрана,
+# включаем режим «только постоянный пароль». Делаем это ПОСЛЕ установки
+# пароля и только если он действительно сохранился: иначе у хоста не останется
+# ни одного валидного пароля и подключиться будет невозможно.
+- name: RustDesk | Windows | прочитать способ проверки пароля
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--option"
+      - "verification-method"
+    chdir: "{{ rd_windows_dir }}"
+  register: rd_win_vmethod
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - rd_permanent_password | length > 0
+    - rd_set_verification_method | bool
+    - rd_win_exe.stat.exists | default(false)
+    - rd_password_ok | default(false) | bool
+
+- name: RustDesk | Windows | включить проверку только по постоянному паролю
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--option"
+      - "verification-method"
+      - "{{ rd_verification_method }}"
+    chdir: "{{ rd_windows_dir }}"
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_set_verification_method | bool
+    - rd_win_exe.stat.exists | default(false)
+    - rd_password_ok | default(false) | bool
+    - (rd_win_vmethod.stdout | default('') | trim) != rd_verification_method
+  changed_when: true
+  notify: RustDesk | перезапустить службу
+
+- name: RustDesk | Windows | собрать диагностику по паролю
+  ansible.windows.win_shell: |
+    $dir = '{{ rd_windows_config_dir }}\..\log'
+    if (-not (Test-Path -LiteralPath $dir)) { 'нет каталога логов'; exit 0 }
+    $f = Get-ChildItem -LiteralPath $dir -Filter *.log -File -ErrorAction SilentlyContinue |
+         Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $f) { 'файлов лога нет'; exit 0 }
+    $lines = Get-Content -LiteralPath $f.FullName -Tail 500 -ErrorAction SilentlyContinue |
+             Where-Object { $_ -match 'password|permanent|rejected|error' } |
+             Select-Object -Last 8
+    if (-not $lines) { 'в логе нет строк про пароль' } else { $lines -join "`n" }
+  register: rd_win_pw_diag
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_win_exe.stat.exists | default(false)
+    - not (rd_password_ok | default(false) | bool)
+
+- name: RustDesk | Windows | сообщить, что постоянный пароль не сохранился
+  ansible.builtin.fail:
+    msg: >-
+      Постоянный пароль не попал в конфиг службы на {{ inventory_hostname }}
+      ({{ rd_windows_password_file }}). Команда --password вернула:
+      «{{ rd_win_set_password.stdout | default('') | replace(rd_permanent_password, '***') | trim }}»
+      (rc={{ rd_win_set_password.rc | default('?') }}).
+      Чтобы не остаться без доступа, одноразовый пароль с экрана снова включён
+      (verification-method=use-both-passwords). Обычно причина — служба
+      RustDesk не успела ответить по IPC; повтори прогон. Если не помогает,
+      проверь журнал службы "{{ rd_service_name }}" и права LocalService на
+      папку config. Строки журнала про пароль:
+      {{ rd_win_pw_diag.stdout | default('') | replace(rd_permanent_password, '***') | trim }}
+  when:
+    - not ansible_check_mode
+    - rd_permanent_password | length > 0
+    - rd_win_exe.stat.exists | default(false)
+    - not (rd_password_ok | default(false) | bool)
+
+# Проверяем именно файл службы: `--option` при недоступном IPC молча
+# записывает параметры в профиль текущего пользователя, и такая ошибка
+# иначе осталась бы незамеченной. Проверка стоит после установки пароля,
+# чтобы заодно убедиться, что и он попал в конфиг службы.
+- name: RustDesk | Windows | проверить конфиг службы
+  ansible.windows.win_shell: |
+    $opts = '{{ rd_windows_options_file }}'
+    $pw = '{{ rd_windows_password_file }}'
+    $problems = @()
+    if (-not (Test-Path -LiteralPath $opts)) {
+        $problems += ('нет файла ' + $opts)
+    } else {
+        $c = Get-Content -LiteralPath $opts -Raw
+        $checks = @(
+            @('custom-rendezvous-server', '{{ rd_server }}'),
+            @('relay-server', '{{ rd_relay_server }}'),
+            @('key', '{{ rd_key }}')
+        )
+        {% if rd_permanent_password | length > 0 and rd_set_verification_method | bool %}
+        $checks += ,@('verification-method', '{{ rd_verification_method }}')
+        {% endif %}
+        foreach ($kv in $checks) {
+            if ($c -notmatch [regex]::Escape($kv[1])) {
+                $problems += ('нет ' + $kv[0])
+            }
+        }
+    }
+    {% if rd_permanent_password | length > 0 %}
+    $hasPw = (Test-Path -LiteralPath $pw) -and
+             (Select-String -LiteralPath $pw -Pattern '^\s*password\s*=\s*["''][^"'']+["'']' -Quiet)
+    if (-not $hasPw) {
+        $keys = @()
+        if (Test-Path -LiteralPath $pw) {
+            $keys = (Get-Content -LiteralPath $pw | ForEach-Object {
+                if ($_ -match '^\s*([A-Za-z0-9_-]+)\s*=') { $matches[1] }
+            })
+        }
+        if (-not $keys) { $keys = @('файл пуст или его нет') }
+        $problems += ('нет постоянного пароля в ' + $pw + ' (ключи в файле: ' + ($keys -join ',') + ')')
+    }
+    {% endif %}
+    if ($problems.Count -eq 0) { Write-Output 'ok' } else { Write-Output ($problems -join '; ') }
+  register: rd_win_service_conf
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | убедиться, что конфиг службы записан
+  ansible.builtin.assert:
+    that:
+      - "'ok' in (rd_win_service_conf.stdout | default(''))"
+    fail_msg: >-
+      Настройки не попали в конфиг службы на {{ inventory_hostname }}:
+      {{ rd_win_service_conf.stdout | default('') | trim }}.
+      Скорее всего, IPC службы "{{ rd_service_name }}" недоступен из
+      WinRM-сессии, и значения ушли в профиль пользователя.
+      Проверь вручную на хосте:
+      & "{{ rd_windows_exe }}" --option custom-rendezvous-server
+  when:
+    - not ansible_check_mode
+    - rd_win_service_conf.stdout is defined
+
+- name: RustDesk | Windows | получить ID устройства
+  ansible.windows.win_command:
+    argv:
+      - "{{ rd_windows_exe }}"
+      - "--get-id"
+    chdir: "{{ rd_windows_dir }}"
+  register: rd_win_get_id
+  changed_when: false
+  failed_when: false
+  retries: 12
+  delay: 5
+  until: rd_win_get_id.rc == 0 and (rd_win_get_id.stdout | trim | length) > 0
+  when:
+    - not ansible_check_mode
+    - rd_win_exe.stat.exists | default(false)
+
+- name: RustDesk | Windows | выделить ID
+  ansible.builtin.set_fact:
+    rd_id: >-
+      {{ rd_win_get_id.stdout | default('')
+         | regex_search('([0-9]{6,12})', '\1') | default([], true)
+         | first | default('') }}
+
+- name: RustDesk | Windows | проверить, что ID получен
+  ansible.builtin.assert:
+    that:
+      - rd_id | length > 0
+    fail_msg: >-
+      Не удалось получить RustDesk ID на {{ inventory_hostname }}.
+      Проверь, что служба "{{ rd_service_name }}" запущена и клиент установлен.
+  when: not ansible_check_mode
+
+- name: RustDesk | Windows | зафиксировать версию
+  ansible.builtin.set_fact:
+    rd_version_installed: "{{ rd_win_version if rd_win_installed | bool else rd_version }}"
+
+- name: RustDesk | Windows | результат
+  ansible.builtin.debug:
+    msg: >-
+      RustDesk ID: {{ rd_id | default('n/a') }}
+      | версия: {{ rd_win_version | default('n/a') }}
+      | служба: {{ 'есть' if rd_win_service.exists | default(false) else 'нет' }}

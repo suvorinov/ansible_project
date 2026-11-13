@@ -1,0 +1,9 @@
+# ~/ansible_project/playbooks/ping_test.yml
+---
+- name: Ping всех Windows-хостов
+  hosts: windows_hosts
+  gather_facts: no
+  ignore_unreachable: yes
+  tasks:
+    - name: Win_ping
+      ansible.windows.win_ping:

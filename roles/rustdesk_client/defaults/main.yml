@@ -1,0 +1,94 @@
+---
+# Адрес hbbs (ID-сервер). Обязателен.
+# Для парка в той же сети — IP RMM-хоста, например 192.168.0.9.
+rd_server: ""
+
+# Публичный ключ сервера (содержимое rustdesk-data/id_ed25519.pub). Обязателен.
+rd_key: ""
+
+# Порт relay-сервера hbbr.
+rd_relay_port: 21117
+
+# Версия клиента: "1.5.3" или "latest" (latest разрешается обёрткой один раз).
+rd_version: "1.5.3"
+
+# Явный URL установщика (переопределяет rd_version/архитектуру).
+# Если задан, клиент скачивает установщик прямо по этой ссылке.
+rd_installer_url: ""
+
+# Локальный кэш установщиков на control-node. Если файл
+#   <dir>/rustdesk-<version>-<arch>.<ext>
+# существует, он копируется на клиент по WinRM (не требует интернета на
+# клиенте). Если нет — клиент скачивает установщик с GitHub сам.
+# Заполнить кэш: ./deploy_rustdesk.sh --prefetch
+rd_installer_cache_dir: "{{ playbook_dir }}/../files/installers"
+
+# Проверять TLS при скачивании установщика с GitHub.
+rd_validate_certs: true
+
+# Переустановить клиент, даже если уже стоит.
+rd_force_install: false
+
+# Постоянный пароль для unattended-доступа (необязательно).
+# Задаётся только если в конфиге ещё нет пароля.
+rd_permanent_password: ""
+# Перезаписать уже установленный постоянный пароль.
+rd_force_password: false
+
+# Способ проверки пароля при подключении (опция verification-method):
+#   use-permanent-password — только постоянный пароль (по умолчанию, когда он
+#                            задан: одноразовый пароль с экрана клиента тогда
+#                            не нужен и не принимается);
+#   use-both-passwords     — и постоянный, и одноразовый.
+# Меняем только при заданном rd_permanent_password и только ПОСЛЕ его установки.
+rd_set_verification_method: true
+rd_verification_method: use-permanent-password
+
+# Куда на control-node складывать отчёт с ID машин.
+rd_report_dir: "{{ playbook_dir }}/../reports/rustdesk"
+
+# --- Windows ---
+# Формат установщика: msi (по умолчанию) или exe.
+# MSI ставится через msiexec /qn — предсказуемо, с кодом возврата и журналом.
+# EXE-установщик RustDesk — NSIS-обёртка: из WinRM-сессии она может повиснуть
+# на невидимом диалоге UAC, поэтому exe включаем только осознанно.
+# Если в rd_installer_url указан .msi/.exe, формат берётся из URL.
+rd_windows_package_format: msi
+
+# Сколько ждать установщик, прежде чем прибить его и упасть с ошибкой (сек).
+rd_windows_install_timeout: 900
+
+# Журнал msiexec (/L*v) — читается при ошибке установки.
+rd_windows_install_log: '{{ rd_windows_temp_dir }}\rustdesk-install.log'
+
+rd_service_name: "RustDesk"
+rd_windows_dir: 'C:\Program Files\RustDesk'
+rd_windows_exe: 'C:\Program Files\RustDesk\rustdesk.exe'
+rd_windows_temp_dir: 'C:\Windows\Temp'
+rd_windows_config_dir: 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config'
+rd_windows_password_file: '{{ rd_windows_config_dir }}\RustDesk.toml'
+rd_windows_options_file: '{{ rd_windows_config_dir }}\RustDesk2.toml'
+
+# PowerShell-проба: читает текущие параметры через IPC службы и возвращает
+# JSON {"current": {...}, "diff": {...}}. Только чтение.
+rd_win_options_probe: |
+  $ErrorActionPreference = 'SilentlyContinue'
+  $exe = '{{ rd_windows_exe }}'
+  $desired = [ordered]@{
+      'custom-rendezvous-server' = '{{ rd_server }}'
+      'relay-server'             = '{{ rd_relay_server }}'
+      'key'                      = '{{ rd_key }}'
+  }
+  $current = [ordered]@{}
+  $diff = [ordered]@{}
+  foreach ($k in $desired.Keys) {
+      $v = ((& $exe --option $k 2>$null) -join '').Trim()
+      $current[$k] = $v
+      if ($v -ne $desired[$k]) { $diff[$k] = $desired[$k] }
+  }
+  @{ current = $current; diff = $diff } | ConvertTo-Json -Compress -Depth 4
+
+# --- Linux ---
+rd_linux_arch: "{{ 'aarch64' if (ansible_architecture | default('') | lower) in ['aarch64', 'arm64'] else 'x86_64' }}"
+rd_linux_config_dir: /root/.config/rustdesk
+rd_linux_package: /tmp/rustdesk-client.{{ 'rpm' if ansible_os_family == 'RedHat' else 'deb' }}

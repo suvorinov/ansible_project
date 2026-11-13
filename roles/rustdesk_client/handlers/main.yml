@@ -1,0 +1,12 @@
+---
+- name: RustDesk | перезапустить службу
+  ansible.windows.win_service:
+    name: "{{ rd_service_name }}"
+    state: restarted
+  when: ansible_os_family == 'Windows'
+
+- name: RustDesk | перезапустить службу Linux
+  ansible.builtin.systemd:
+    name: rustdesk
+    state: restarted
+  when: ansible_system == 'Linux'
