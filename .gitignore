@@ -20,3 +20,6 @@ __pycache__/
 
 # Временный inventory
 inventory/temp/
+
+# Генерируется generate_inventory.py, канонический — inventory/windows_hosts.yml
+generated_inventory.yml

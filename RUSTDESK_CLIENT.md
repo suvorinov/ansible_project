@@ -1,8 +1,12 @@
 # Клиенты RustDesk: массовая установка
 
+> Репозиторий: <https://github.com/suvorinov/ansible_project>.
+> Серверная часть — [rmm-ra](https://github.com/suvorinov/rmm-ra).
+
 Роль `rustdesk_client` ставит RustDesk на Windows/Linux и настраивает его на
-self-hosted сервер из `~/opt/rmm-ra` (hbbs/hbbr). Ставится поверх того же
-inventory, что и агенты MeshCentral.
+self-hosted сервер из [rmm-ra](https://github.com/suvorinov/rmm-ra) (локально
+`~/opt/rmm-ra`, hbbs/hbbr). Ставится поверх того же inventory, что и агенты
+MeshCentral.
 
 ## Что делает роль
 

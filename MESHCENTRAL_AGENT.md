@@ -1,5 +1,8 @@
 # Массовая установка агента MeshCentral через Ansible
 
+> Репозиторий: <https://github.com/suvorinov/ansible_project>.
+> Серверная часть — [rmm-ra](https://github.com/suvorinov/rmm-ra).
+
 Роль `meshcentral_agent` ставит агента MeshCentral на Windows и Linux хосты
 из существующего inventory `inventory/windows_hosts.yml`.
 
