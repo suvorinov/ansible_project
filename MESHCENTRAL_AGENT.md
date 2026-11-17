@@ -155,7 +155,8 @@ ansible-playbook -i inventory/windows_hosts.yml playbooks/meshcentral_agent.yml 
 | `UNREACHABLE` | WinRM/5985, firewall, пароль, `ansible_user` |
 | `401`/`403` при скачивании агента | `lockagentdownload` в MeshCentral, доступность `rmm.zr.local` |
 | Служба не появилась | права администратора, лог установки, антивирус |
-| Устройство не в UI | время/часы на клиенте, DNS, `mc_mesh_id` |
+| Устройство не в UI | время/часы на клиенте, DNS, `mc_mesh_id`; на сервере RMM: `make mesh-doctor` |
+| Устройство мигает online/offline (рвётся раз в ~90с) | NPM режет WebSocket: на сервере RMM выполнить `make npm-ws-timeout` |
 | Агент уже стоял, но в другой группе | роль пропустит установку; запусти с `--force` |
 | `desktop_interact` у службы сбросился | обновись до текущей версии роли: она не трогает параметры службы |
 | TLS-ошибка | добавить `ZR-ADMIN Root CA` в доверенные или `mc_validate_certs=false` |
