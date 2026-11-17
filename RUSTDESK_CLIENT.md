@@ -160,6 +160,13 @@ grep -H rustdesk_id ~/working/ansible_project/reports/rustdesk/*.txt
 grep -L 'permanent_password=yes' ~/working/ansible_project/reports/rustdesk/*.txt
 ```
 
+Удобнее — HTML-страница со всеми ID, ссылками `rustdesk://connection/new/<ID>`
+и подсветкой хостов без постоянного пароля:
+
+```bash
+cd ~/opt/rmm-ra && make rustdesk-book   # → reports/rustdesk-book.html
+```
+
 ## Полезные ключи обёртки
 
 | Ключ | Что делает |
