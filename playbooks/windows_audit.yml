@@ -1,0 +1,22 @@
+# ~/working/ansible_project/playbooks/windows_audit.yml
+#
+# Сбор данных аудита с Windows-хостов: нагрузка/процессы, браузеры,
+# история и закладки. Результат забирается на control-node в
+# reports/windows_audit/<run>/raw/<host>.zip.
+#
+# Обычно запускается через обёртку (она же собирает отчёт):
+#   ./collect_windows_audit.sh --limit 192.168.0.90
+#
+# Вручную:
+#   ansible-playbook -i inventory/windows_hosts.yml playbooks/windows_audit.yml \
+#     --limit 192.168.0.90 --connection-password-file /path/to/pass \
+#     -e wa_report_dir=/tmp/windows_audit
+---
+- name: Аудит Windows-хостов
+  hosts: all
+  gather_facts: true
+  ignore_unreachable: true
+
+  roles:
+    - role: windows_audit
+      tags: [audit, windows_audit]

@@ -1,0 +1,66 @@
+---
+- name: Windows | проверить права администратора
+  ansible.windows.win_shell: |
+    $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { 'admin' } else { 'not-admin' }
+  register: wa_admin
+  changed_when: false
+  failed_when: wa_admin.stdout | trim != 'admin'
+
+- name: Windows | создать каталог для аудита
+  ansible.windows.win_file:
+    path: "{{ wa_remote_dir }}"
+    state: directory
+
+- name: Windows | скопировать сборщик
+  ansible.windows.win_copy:
+    src: "{{ role_path }}/files/Invoke-WindowsAudit.ps1"
+    dest: "{{ wa_remote_script }}"
+
+- name: Windows | собрать данные и забрать архив
+  block:
+    - name: Windows | собрать данные
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $auditArgs = @(
+          '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '{{ wa_remote_script }}',
+          '-OutputZip', '{{ wa_remote_zip }}'
+        )
+        if (-not ${{ 'true' if wa_include_history | bool else 'false' }}) { $auditArgs += '-SkipHistory' }
+        if (-not ${{ 'true' if wa_include_bookmarks | bool else 'false' }}) { $auditArgs += '-SkipBookmarks' }
+        if (-not ${{ 'true' if wa_include_profiles | bool else 'false' }}) { $auditArgs += '-SkipProfiles' }
+        & powershell.exe @auditArgs
+        if ($LASTEXITCODE -ne 0) { throw "Сборщик завершился с кодом $LASTEXITCODE" }
+      register: wa_collect
+      changed_when: false
+      async: "{{ wa_collect_timeout }}"
+      poll: 10
+
+    - name: Windows | показать результат сбора
+      ansible.builtin.debug:
+        msg: "{{ wa_collect.stdout_lines | default([]) }}"
+      when: wa_collect.stdout is defined and wa_collect.stdout | length > 0
+
+    - name: Windows | забрать архив на control-node
+      ansible.builtin.fetch:
+        src: "{{ wa_remote_zip }}"
+        dest: "{{ wa_report_dir }}/raw/"
+        flat: true
+      when: not ansible_check_mode
+
+  always:
+    - name: Windows | удалить архив с хоста
+      ansible.windows.win_file:
+        path: "{{ wa_remote_zip }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - not (wa_keep_remote_zip | bool)
+
+    - name: Windows | удалить сборщик с хоста
+      ansible.windows.win_file:
+        path: "{{ wa_remote_script }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - not (wa_keep_remote_script | bool)

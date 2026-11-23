@@ -1,0 +1,4 @@
+---
+- name: Windows | аудит хоста
+  when: ansible_facts['os_family'] | default('') == 'Windows'
+  ansible.builtin.include_tasks: windows.yml

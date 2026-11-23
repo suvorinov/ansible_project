@@ -1,0 +1,27 @@
+---
+# Каталог на хосте для сборщика и временного ZIP.
+# ProgramData доступен только администраторам.
+wa_remote_dir: 'C:\ProgramData\RMMAudit'
+wa_remote_script: '{{ wa_remote_dir }}\Invoke-WindowsAudit.ps1'
+wa_remote_zip: '{{ wa_remote_dir }}\{{ inventory_hostname }}.zip'
+
+# Куда на control-node складывать архивы (роль пишет в <dir>/raw/).
+# Обёртка collect_windows_audit.sh подставляет сюда каталог прогона.
+wa_report_dir: "{{ playbook_dir }}/../reports/windows_audit"
+
+# Что собирать. Историю, закладки и обход профилей можно отключить.
+wa_include_history: true
+wa_include_bookmarks: true
+wa_include_profiles: true
+
+# Сколько секунд ждать сборщик на хосте (async/poll).
+# Большие профили с историей за годы могут собираться минутами.
+wa_collect_timeout: 1200
+
+# Оставить ZIP на хосте после вывоза (обычно не нужно).
+wa_keep_remote_zip: false
+
+# Оставить сам PowerShell-сборщик на хосте (для ручных запусков).
+# По умолчанию удаляем: на парке он не нужен, а лишний файл — лишняя
+# поверхность атаки.
+wa_keep_remote_script: false

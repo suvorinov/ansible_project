@@ -11,12 +11,15 @@ RustDesk на парк Windows-машин (и Linux, где это поддер�
 |---|---|
 | `roles/meshcentral_agent/` | установка и регистрация агента MeshCentral |
 | `roles/rustdesk_client/` | установка RustDesk, привязка к своему hbbs/relay, постоянный пароль для unattended-доступа |
+| `roles/windows_audit/` | снимок нагрузки/процессов, браузеры, история и закладки |
 | `deploy_mesh_agent.sh` | обёртка для роли MeshCentral |
 | `deploy_rustdesk.sh` | обёртка для роли RustDesk: кэш установщиков, `--check`, `--limit`, `--ask-password` |
+| `collect_windows_audit.sh` | обёртка аудита: сбор, вывоз ZIP, HTML/CSV-отчёт |
 | `playbooks/` | плейбуки ролей + вспомогательные (ping, сбор информации, прокси) |
 | `inventory/windows_hosts.yml` | inventory парка (160 хостов) |
 | `MESHCENTRAL_AGENT.md` | подробно про агент MeshCentral |
 | `RUSTDESK_CLIENT.md` | подробно про клиент RustDesk, MSI, пароли, диагностику |
+| `WINDOWS_AUDIT.md` | аудит хостов, правовая часть, отчёты |
 | `ansible.cfg` | настройки Ansible (collections, roles, таймауты) |
 
 ## Требования
@@ -48,10 +51,15 @@ cd ansible_project
 # агент MeshCentral
 ./deploy_mesh_agent.sh --mesh-id <MESHID> --limit 192.168.0.90 --check
 ./deploy_mesh_agent.sh --mesh-id <MESHID> --limit 192.168.0.90
+
+# аудит хоста: нагрузка, браузеры, история (7 дней), закладки
+./collect_windows_audit.sh --limit 192.168.0.90
+# отчёт: reports/windows_audit/latest/report/index.html
 ```
 
 Массовый прогон — без `--limit` (обёртки попросят подтверждение). ID машин
-складываются в `reports/rustdesk/<host>.txt`.
+складываются в `reports/rustdesk/<host>.txt`, отчёты аудита — в
+`reports/windows_audit/`.
 
 ## Что не попадает в git
 
@@ -72,4 +80,6 @@ cd ansible_project
 - [MESHCENTRAL_AGENT.md](MESHCENTRAL_AGENT.md) — агент MeshCentral;
 - [RUSTDESK_CLIENT.md](RUSTDESK_CLIENT.md) — клиент RustDesk: MSI, `--check`,
   постоянный пароль, `verification-method`, разбор ошибок;
+- [WINDOWS_AUDIT.md](WINDOWS_AUDIT.md) — аудит хостов: процессы, браузеры,
+  история и закладки, правовая часть и хранение отчётов;
 - [rmm-ra](https://github.com/suvorinov/rmm-ra) — серверная часть и её README.
